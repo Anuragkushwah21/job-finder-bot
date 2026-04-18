@@ -1,6 +1,6 @@
 const axios = require('axios');
 
-// 🔹 1. Remotive API
+// ================= 1 REMOTIVE =================
 const fetchRemotive = async () => {
   const res = await axios.get('https://remotive.com/api/remote-jobs');
 
@@ -12,8 +12,7 @@ const fetchRemotive = async () => {
   }));
 };
 
-
-// 🔹 2. ArbeitNow API
+// ================= 2 ARBEIT =================
 const fetchArbeit = async () => {
   const res = await axios.get('https://arbeitnow.com/api/job-board-api');
 
@@ -25,8 +24,7 @@ const fetchArbeit = async () => {
   }));
 };
 
-
-// 🔹 3. JSearch API
+// ================= 3 JSEARCH =================
 const fetchRapid = async () => {
   const res = await axios.get(
     'https://jsearch.p.rapidapi.com/search',
@@ -52,18 +50,47 @@ const fetchRapid = async () => {
   }));
 };
 
+// ================= 4 Adzuna =================
+const fetchAdzuna = async () => {
 
-// 🔥 FINAL EXPORT
+ const res = await axios.get(
+`https://api.adzuna.com/v1/api/jobs/in/search/1`,
+{
+ params:{
+   app_id:process.env.ADZUNA_APP_ID,
+   app_key:process.env.ADZUNA_APP_KEY,
+   what:'developer'
+ }
+}
+);
+
+ return res.data.results.map(job=>({
+   title:job.title,
+   company:job.company?.display_name,
+   url:job.redirect_url,
+   description:job.description||''
+ }));
+
+}
+// ================= FINAL =================
 const fetchJobs = async () => {
   const results = await Promise.allSettled([
     fetchRemotive(),
     fetchArbeit(),
-    fetchRapid()
+    fetchRapid(),
+    fetchAdzuna(),
   ]);
 
-  return results
-    .filter(r => r.status === "fulfilled")
+  let jobs = results
+    .filter(r => r.status === 'fulfilled')
     .flatMap(r => r.value);
+
+  jobs = Array.from(
+    new Map(jobs.map(j => [j.url, j])).values()
+  );
+
+  return jobs;
 };
 
 module.exports = { fetchJobs };
+
