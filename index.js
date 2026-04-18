@@ -1,4 +1,8 @@
 require('dotenv').config();
+
+const express = require('express');
+const app = express();
+
 const TelegramBot = require('node-telegram-bot-api');
 const connectDB = require('./config/db');
 const User = require('./models/User');
@@ -8,488 +12,158 @@ const pdf = require('pdf-parse');
 const axios = require('axios');
 const cron = require('node-cron');
 
+
+// ---------------- ENV CHECK ----------------
+
+if (!process.env.BOT_TOKEN) {
+  console.error("BOT_TOKEN missing in environment variables");
+  process.exit(1);
+}
+
+if (!process.env.MONGO_URI) {
+  console.error("MONGO_URI missing");
+  process.exit(1);
+}
+
+
+// ---------------- DB ----------------
+
 connectDB();
 
-const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
+
+// ---------------- TELEGRAM BOT ----------------
+
+// only ONE polling instance
+const bot = new TelegramBot(
+  process.env.BOT_TOKEN,
+  {
+     polling: {
+      autoStart: true,
+      interval: 3000
+   }
+  }
+);
+bot.deleteWebHook();
+bot.on("polling_error", (err) => {
+ console.log("Polling Error:", err.message);
+});
 
 
-// ================= START =================
+// ---------------- START ----------------
 
 bot.onText(/\/start/, async (msg) => {
 
-  const chatId = msg.chat.id;
+ try {
 
-  let user = await User.findOne({ chatId });
+   const chatId = msg.chat.id;
 
-  if (!user) {
+   let user = await User.findOne({ chatId });
 
-    user = await User.create({
-      chatId,
-      seenJobs: [],
-      lastJobs: [],
-      currentJobIndex: 0,
-      step: "ask_experience"
-    });
+   if (!user) {
 
-  } else {
-
-    user.step = "ask_experience";
-
-  }
-
-  await user.save();
-
-  bot.sendMessage(
-    chatId,
-    "Type: fresher OR experienced"
-  );
-
-});
-
-
-// ================= EXPERIENCE =================
-
-bot.on('message', async (msg) => {
-
-  if (!msg.text) return;
-
-  const chatId = msg.chat.id;
-  const text = msg.text.toLowerCase();
-
-  const user = await User.findOne({ chatId });
-
-  if (!user) return;
-
-
-  // EXPERIENCE FLOW
-
-  if (user.step === "ask_experience") {
-
-    if (
-      text === "fresher" ||
-      text === "experienced"
-    ) {
-
-      user.experience = text;
-
-      user.step = "ask_resume";
-
-      await user.save();
-
-      return bot.sendMessage(
+      user = await User.create({
         chatId,
-        "Upload your resume (PDF)"
-      );
-    }
-  }
-
-
-
-  // ================= /MORE =================
-
-  if (text === "/more") {
-
-    if (!user.lastJobs?.length) {
-
-      return bot.sendMessage(
-        chatId,
-        "No jobs yet. Upload resume first."
-      );
-
-    }
-
-    const start =
-      user.currentJobIndex || 0;
-
-    const end = start + 10;
-
-    const nextJobs =
-      user.lastJobs.slice(start, end);
-
-    if (!nextJobs.length) {
-
-      return bot.sendMessage(
-        chatId,
-        "No more jobs available."
-      );
-
-    }
-
-    user.currentJobIndex = end;
-
-    await user.save();
-
-    let message =
-      "🔥 More Jobs:\n\n";
-
-    nextJobs.forEach(job => {
-
-      message +=
-        `Title: ${job.title}
-Company: ${job.company}
-Apply: ${job.url}
-
-`;
-
-    });
-
-    return bot.sendMessage(
-      chatId,
-      message
-    );
-
-  }
-
-});
-
-
-
-
-// ================= RESUME =================
-
-bot.on('document', async (msg) => {
-
-  const chatId = msg.chat.id;
-
-  const user =
-    await User.findOne({ chatId });
-
-  if (!user) return;
-
-
-  if (
-    msg.document.mime_type !==
-    "application/pdf"
-  ) {
-
-    return bot.sendMessage(
-      chatId,
-      "Only PDF allowed ❌"
-    );
-
-  }
-
-
-
-  try {
-
-    bot.sendMessage(
-      chatId,
-      "Processing resume... ⏳"
-    );
-
-
-    const fileLink =
-      await bot.getFileLink(
-        msg.document.file_id
-      );
-
-    const fileRes =
-      await axios.get(
-        fileLink,
-        { responseType: 'arraybuffer' }
-      );
-
-
-    const data =
-      await pdf(fileRes.data);
-
-    const text =
-      (data.text || "")
-        .toLowerCase();
-
-
-
-    const skillsList = [
-      "react",
-      "node",
-      "mongodb",
-      "javascript",
-      "html",
-      "css",
-      "angular",
-      "typescript",
-      "express",
-      "sql",
-      "nextjs"
-    ];
-
-
-    const foundSkills =
-      skillsList.filter(skill =>
-        text.includes(skill)
-      );
-
-
-    user.skills = foundSkills;
-
-    user.step = "ready";
-
-    await user.save();
-
-
-
-    bot.sendMessage(
-      chatId,
-      `Skills: ${foundSkills.length
-        ? foundSkills.join(", ")
-        : "General profile"
-      }`
-    );
-
-
-
-    // ================= FETCH JOBS =================
-
-    const jobs =
-      await fetchJobs();
-
-    if (!jobs?.length) {
-
-      return bot.sendMessage(
-        chatId,
-        "No jobs available"
-      );
-
-    }
-
-
-
-    const uniqueJobs =
-      Array.from(
-        new Map(
-          jobs.map(
-            j => [j.url, j]
-          )
-        ).values()
-      );
-
-
-
-    // ================= SOFT MATCH =================
-
-    let matched =
-      uniqueJobs.filter(job => {
-
-        const title =
-          (job.title || "")
-            .toLowerCase();
-
-        const desc =
-          (job.description || "")
-            .toLowerCase();
-
-        return (
-
-          foundSkills.some(skill =>
-            title.includes(skill) ||
-            desc.includes(skill)
-          )
-
-          ||
-
-          title.includes("developer")
-          ||
-          title.includes("engineer")
-          ||
-          title.includes("software")
-          ||
-          title.includes("web")
-
-        );
-
+        seenJobs: [],
+        lastJobs: [],
+        currentJobIndex: 0,
+        step: "ask_experience"
       });
 
+   } else {
+
+      user.step="ask_experience";
+      await user.save();
+
+   }
+
+   bot.sendMessage(
+      chatId,
+      "Type: fresher OR experienced"
+   );
+
+ } catch(err){
+   console.log(err);
+ }
+
+});
 
 
-    // ================= FRESHER FIXED =================
+// ---------------- MESSAGE ----------------
 
-    if (
-      user.experience === "fresher"
-    ) {
+bot.on('message', async (msg)=>{
 
-      const fresherKeywords = [
-        "intern",
-        "internship",
-        "junior",
-        "entry",
-        "entry level",
-        "trainee",
-        "associate"
-      ];
+try{
 
+ if(!msg.text) return;
 
-      const blockedKeywords = [
-        "senior",
-        "lead",
-        "staff",
-        "principal",
-        "manager",
-        "architect",
-        "3+ years",
-        "5+ years"
-      ];
+ const chatId = msg.chat.id;
+ const text=msg.text.toLowerCase();
+
+ if(text==="/start") return;
+
+ const user=await User.findOne({chatId});
+
+ if(!user) return;
 
 
-      let fresherPool =
-        uniqueJobs.filter(job => {
+ // experience
 
-          const combined =
-            (
-              (job.title || "")
-              +
-              " "
-              +
-              (job.description || "")
-            )
-              .toLowerCase();
+ if(user.step==="ask_experience"){
 
-          return (
+   if(
+      text==="fresher" ||
+      text==="experienced"
+   ){
 
-            fresherKeywords.some(
-              k =>
-                combined.includes(k)
-            )
+     user.experience=text;
+     user.step="ask_resume";
 
-            &&
+     await user.save();
 
-            !blockedKeywords.some(
-              k =>
-                combined.includes(k)
-            )
+     return bot.sendMessage(
+       chatId,
+       "Upload your resume PDF"
+     );
+   }
 
-          );
-
-        });
+ }
 
 
+ // /more
 
-      let skillMatchedFreshers =
-        fresherPool.filter(job => {
+ if(text==="/more"){
 
-          const combined =
-            (
-              (job.title || "")
-              +
-              " "
-              +
-              (job.description || "")
-            )
-              .toLowerCase();
-
-          return foundSkills.some(
-            skill =>
-              combined.includes(skill)
-          );
-
-        });
-
-
-
-      if (
-        skillMatchedFreshers.length
-      ) {
-
-        matched =
-          skillMatchedFreshers;
-
-      }
-
-      else if (
-        fresherPool.length
-      ) {
-
-        matched =
-          fresherPool;
-
-      }
-
-    }
-
-
-
-
-    // ================= FALLBACK EXPERIENCED ONLY =================
-
-    if (
-
-      user.experience !== "fresher"
-
-      &&
-
-      matched.length < 15
-
-    ) {
-
-      const extra =
-        uniqueJobs.filter(
-          j =>
-            !matched.some(
-              m =>
-                m.url === j.url
-            )
-        );
-
-
-      matched = [
-        ...matched,
-        ...extra
-      ];
-
-    }
-
-
-
-
-    // ================= SHUFFLE =================
-
-    const shuffled =
-      matched.sort(
-        () =>
-          Math.random() - 0.5
+    if(!user.lastJobs?.length){
+      return bot.sendMessage(
+       chatId,
+       "No jobs available yet."
       );
+    }
 
+    const start=user.currentJobIndex||0;
 
+    const end=start+10;
 
-    user.lastJobs = shuffled;
+    const nextJobs=
+       user.lastJobs.slice(start,end);
 
-    user.currentJobIndex = 5;
+    if(!nextJobs.length){
+      return bot.sendMessage(
+       chatId,
+       "No more jobs found."
+      );
+    }
 
-
-    user.seenJobs = [
-
-      ...new Set([
-
-        ...(user.seenJobs || []),
-
-        ...shuffled.map(
-          j => j.url
-        )
-
-      ])
-
-    ];
-
+    user.currentJobIndex=end;
 
     await user.save();
 
+    let message="More Jobs:\n\n";
 
-
-
-    // ================= FIRST 10 =================
-
-    const firstJobs =
-      shuffled.slice(0, 10);
-
-
-    let message =
-      "🔥 Jobs for you:\n\n";
-
-
-    firstJobs.forEach(job => {
+    nextJobs.forEach(job=>{
 
       message +=
-        `Title: ${job.title}
+`Title: ${job.title}
 Company: ${job.company}
 Apply: ${job.url}
 
@@ -497,135 +171,277 @@ Apply: ${job.url}
 
     });
 
+    return bot.sendMessage(chatId,message);
 
-    bot.sendMessage(
-      chatId,
-      message
+ }
+
+}catch(err){
+
+ console.log(err);
+
+}
+
+});
+
+
+
+// ---------------- DOCUMENT ----------------
+
+bot.on("document", async(msg)=>{
+
+try{
+
+ const chatId=msg.chat.id;
+
+ const user=
+   await User.findOne({chatId});
+
+ if(!user) return;
+
+
+ if(
+   msg.document.mime_type!=="application/pdf"
+ ){
+
+   return bot.sendMessage(
+    chatId,
+    "Only PDF allowed"
+   );
+
+ }
+
+
+ bot.sendMessage(
+   chatId,
+   "Processing Resume..."
+ );
+
+
+ const fileLink=
+   await bot.getFileLink(
+      msg.document.file_id
+   );
+
+
+ const fileRes=
+    await axios.get(
+      fileLink,
+      {
+        responseType:"arraybuffer"
+      }
     );
 
 
-  }
+ const data=
+    await pdf(fileRes.data);
 
-  catch (err) {
+ const resumeText=
+    (data.text || "").toLowerCase();
 
-    console.log(
-      "ERROR:",
-      err
-    );
 
-    bot.sendMessage(
-      chatId,
-      "Error processing resume ❌"
-    );
+ const skillsList=[
+   "react",
+   "node",
+   "mongodb",
+   "javascript",
+   "html",
+   "css",
+   "angular",
+   "typescript",
+   "express",
+   "sql",
+   "nextjs"
+ ];
 
-  }
+
+ const foundSkills=
+   skillsList.filter(
+     skill=>resumeText.includes(skill)
+   );
+
+
+ user.skills=foundSkills;
+
+ user.step="ready";
+
+ await user.save();
+
+
+
+ const jobs=await fetchJobs();
+
+ if(!jobs?.length){
+
+   return bot.sendMessage(
+    chatId,
+    "No jobs found"
+   );
+
+ }
+
+
+ const uniqueJobs=
+   Array.from(
+    new Map(
+      jobs.map(
+       j=>[j.url,j]
+      )
+    ).values()
+   );
+
+
+ let matched=
+   uniqueJobs.filter(job=>{
+
+     const combined=
+      (
+        (job.title||"")+
+        " "+
+        (job.description||"")
+      ).toLowerCase();
+
+
+     return(
+
+      foundSkills.some(
+       s=>combined.includes(s)
+      )
+
+      ||
+
+      combined.includes("developer")
+      ||
+      combined.includes("engineer")
+
+     )
+
+   });
+
+
+ if(!matched.length){
+   matched=uniqueJobs;
+ }
+
+
+ user.lastJobs=matched;
+
+ user.currentJobIndex=10;
+
+ await user.save();
+
+
+ let message=
+   "Jobs For You:\n\n";
+
+
+ matched
+  .slice(0,10)
+  .forEach(job=>{
+
+   message +=
+`Title: ${job.title}
+Company: ${job.company}
+Apply: ${job.url}
+
+`;
+
+ });
+
+
+ bot.sendMessage(
+  chatId,
+  message
+ );
+
+}catch(err){
+
+ console.log("Resume Error:",err);
+
+ bot.sendMessage(
+   msg.chat.id,
+   "Resume processing failed"
+ );
+
+}
 
 });
 
 
 
 
-// ================= DAILY JOBS =================
+// ---------------- CRON ----------------
 
 cron.schedule(
-  '0 9 * * *',
+ '0 9 * * *',
+ async()=>{
 
-  async () => {
+  try{
 
-    const users =
-      await User.find();
+   const users=
+     await User.find();
 
+   for(let user of users){
 
-    for (
-      let user of users
-    ) {
+    const jobs=
+      await fetchJobs();
 
-      if (!user.seenJobs)
-        user.seenJobs = [];
+    if(!jobs?.length)
+      continue;
 
+    let msg=
+     "Today's Jobs\n\n";
 
-      const jobs =
-        await fetchJobs();
+    jobs
+     .slice(0,5)
+     .forEach(job=>{
 
-      if (!jobs?.length)
-        continue;
-
-
-      const uniqueJobs =
-        Array.from(
-          new Map(
-            jobs.map(
-              j => [j.url, j]
-            )
-          ).values()
-        );
-
-
-      const newJobs =
-        uniqueJobs.filter(
-          job =>
-            !user.seenJobs.includes(
-              job.url
-            )
-        );
-
-
-      if (!newJobs.length)
-        continue;
-
-
-      const shuffled =
-        newJobs.sort(
-          () => Math.random() - 0.5
-        );
-
-
-      let msgText =
-        "🔥 Today's Jobs:\n\n";
-
-
-      shuffled
-        .slice(0, 10)
-        .forEach(job => {
-
-          msgText +=
-            `Title: ${job.title}
-Apply: ${job.url}
+      msg+=
+`Title:${job.title}
+Apply:${job.url}
 
 `;
 
-        });
+     });
 
+    bot.sendMessage(
+      user.chatId,
+      msg
+    );
 
-      bot.sendMessage(
-        user.chatId,
-        msgText
-      );
+   }
 
+  }catch(err){
 
-      user.seenJobs = [
+   console.log(
+    "Cron Error:",
+     err
+   );
 
-        ...new Set([
-
-          ...(user.seenJobs || []),
-
-          ...newJobs.map(
-            j => j.url
-          )
-
-        ])
-
-      ];
-
-
-      await user.save();
-
-    }
-
-  },
-
-  {
-    timezone: "Asia/Kolkata"
   }
 
+ },
+ {
+   timezone:"Asia/Kolkata"
+ }
 );
+
+
+
+// ---------------- EXPRESS (Render Fix) ----------------
+
+app.get("/",(req,res)=>{
+ res.send(
+  "Job Finder Bot Running"
+ );
+});
+
+const PORT=
+ process.env.PORT || 4000;
+
+app.listen(PORT,()=>{
+
+ console.log(
+   `Server running on ${PORT}`
+ );
+
+});
