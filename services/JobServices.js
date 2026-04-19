@@ -73,6 +73,8 @@ const fetchAdzuna = async () => {
 
 }
 // ================= FINAL =================
+
+
 const fetchJobs = async () => {
   const results = await Promise.allSettled([
     fetchRemotive(),
