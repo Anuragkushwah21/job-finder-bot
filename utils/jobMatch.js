@@ -1,6 +1,5 @@
 // utils/jobMatch.js
 
-// user.skills ke hisaab se jobs filter karne ka helper
 function matchJobsForUser(user, jobs) {
   const skills = user.skills || [];
 
@@ -8,23 +7,25 @@ function matchJobsForUser(user, jobs) {
     new Map(jobs.map((j) => [j.url, j])).values()
   );
 
-  let matched = uniqueJobs.filter((job) => {
-    const combined = (
-      (job.title || '') +
-      ' ' +
-      (job.description || '')
-    ).toLowerCase();
+  let matched;
 
-    return (
-      skills.some((s) => combined.includes(s)) ||
-      combined.includes('developer') ||
-      combined.includes('engineer')
-    );
-  });
-
-  // agar skills se kuch nahi mila, sabhi uniqueJobs de do
-  if (!matched.length) {
+  if (!skills.length) {
+    // skills nahi hain → generic jobs
     matched = uniqueJobs;
+  } else {
+    matched = uniqueJobs.filter((job) => {
+      const combined = (
+        (job.title || '') +
+        ' ' +
+        (job.description || '')
+      ).toLowerCase();
+
+      return (
+        skills.some((s) => combined.includes(s)) ||
+        combined.includes('developer') ||
+        combined.includes('engineer')
+      );
+    });
   }
 
   return matched;

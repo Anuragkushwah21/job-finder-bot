@@ -1,21 +1,53 @@
-const mongoose=require('mongoose');
+// models/User.js
+const mongoose = require('mongoose');
 
-const userSchema=new mongoose.Schema({
-chatId:{type:Number,unique:true},
-step:{type:String,default:'ask_experience'},
-experience:String,
-skills:{type:[String],default:[]},
-seenJobs:{type:[String],default:[]},
-lastJobs:{
- type:[{
- title:String,
- company:String,
- url:String,
- description:String
- }],
- default:[]
-},
-currentJobIndex:{type:Number,default:0}
-},{timestamps:true});
+const userSchema = new mongoose.Schema(
+  {
+    chatId: {
+      type: Number,
+      required: true,
+      unique: true,
+    },
 
-module.exports=mongoose.model('User',userSchema);
+    step: {
+      type: String,
+      default: 'ask_experience', // ask_experience, ask_resume, ready
+    },
+
+    experience: {
+      type: String, // fresher / experienced
+    },
+
+    skills: {
+      type: [String],
+      default: [],
+    },
+
+    seenJobs: {
+      type: [String], // job URLs
+      default: [],
+    },
+
+    lastJobs: {
+      type: [
+        {
+          title: String,
+          company: String,
+          url: String,
+          description: String,
+        },
+      ],
+      default: [],
+    },
+
+    currentJobIndex: {
+      type: Number,
+      default: 0,
+    },
+  },
+  {
+    timestamps: true,
+  }
+);
+
+module.exports = mongoose.model('User', userSchema);
