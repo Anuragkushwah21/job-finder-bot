@@ -2,19 +2,16 @@
 require('dotenv').config();
 
 const express = require('express');
-const app = express();
-app.use(express.json());
-
 const TelegramBot = require('node-telegram-bot-api');
+const cron = require('node-cron');
+
 const connectDB = require('./config/db');
 const User = require('./models/User');
 const { fetchJobs } = require('./services/JobServices');
-const { matchJobsForUser } = require('./utils/jobMatch');
-const cron = require('node-cron');
-
+const { notifyUsersForNewJobs } = require('./services/newJobNotifier');
 const setupCommands = require('./bot/commands');
 
-// ---------------- ENV ----------------
+// ---------------- ENV VALIDATION ----------------
 if (!process.env.BOT_TOKEN) {
   console.error('BOT_TOKEN missing');
   process.exit(1);
@@ -30,76 +27,60 @@ if (!process.env.RENDER_EXTERNAL_URL) {
   process.exit(1);
 }
 
-// ---------------- DB ----------------
+// ---------------- DB CONNECT ----------------
 connectDB();
 
-// ---------------- BOT (WEBHOOK ONLY) ----------------
-// NO POLLING
+// ---------------- EXPRESS APP ----------------
+const app = express();
+app.use(express.json());
+
+// ---------------- TELEGRAM BOT (WEBHOOK) ----------------
+// NOTE: NO polling, only webhook
 const bot = new TelegramBot(process.env.BOT_TOKEN);
 
-// ---------------- WEBHOOK ----------------
-const webhookUrl = `${process.env.RENDER_EXTERNAL_URL}/bot${process.env.BOT_TOKEN}`;
+// webhook URL (Render external URL + /bot<TOKEN>)
+const webhookPath = `/bot${process.env.BOT_TOKEN}`;
+const webhookUrl = `${process.env.RENDER_EXTERNAL_URL}${webhookPath}`;
 
-app.post(`/bot${process.env.BOT_TOKEN}`, (req, res) => {
-  bot.processUpdate(req.body);
-  res.sendStatus(200);
-});
-
+// Set webhook
 bot
   .setWebHook(webhookUrl)
   .then(() => {
-    console.log('Webhook set');
+    console.log('Webhook set to:', webhookUrl);
   })
-  .catch(console.log);
+  .catch((err) => {
+    console.error('Error setting webhook', err.message);
+  });
+
+// Express route to receive updates from Telegram
+app.post(webhookPath, (req, res) => {
+  try {
+    bot.processUpdate(req.body);
+    res.sendStatus(200);
+  } catch (err) {
+    console.error('Error processing update', err);
+    res.sendStatus(500);
+  }
+});
 
 // ---------------- COMMANDS + HANDLERS ----------------
 setupCommands(bot);
 
 // ---------------- DAILY ALERT (NEW JOBS ONLY) ----------------
 cron.schedule(
-  '0 9 * * *',
+  '0 9 * * *', // every day 9:00 AM
   async () => {
     try {
-      console.log('Running daily jobs');
+      console.log('Running daily jobs cron...');
 
-      const users = await User.find();
-
-      for (const user of users) {
-        const jobs = await fetchJobs();
-        if (!jobs?.length) continue;
-
-        // skills + title/description matching (helper se)
-        const matched = matchJobsForUser(user, jobs);
-
-        const seen = user.seenJobs || [];
-
-        // sirf new jobs jo pehle seenJobs me nahi hain
-        const newJobs = matched.filter((j) => !seen.includes(j.url));
-        if (!newJobs.length) continue;
-
-        let msg = '🔥 New Jobs Update (Daily)\n\n';
-
-        newJobs.slice(0, 5).forEach((job) => {
-          msg += `Title: ${job.title}
-Company: ${job.company}
-Apply: ${job.url}
-
-`;
-        });
-
-        await bot.sendMessage(user.chatId, msg);
-
-        await User.updateOne(
-          { chatId: user.chatId },
-          {
-            $addToSet: {
-              seenJobs: {
-                $each: newJobs.map((j) => j.url),
-              },
-            },
-          }
-        );
+      const jobs = await fetchJobs();
+      if (!jobs?.length) {
+        console.log('No jobs fetched from APIs');
+        return;
       }
+
+      // Yeh helper har user ke liye sirf NEW + MATCHED jobs bhejta hai
+      await notifyUsersForNewJobs(bot, jobs);
     } catch (err) {
       console.log('Cron error', err);
     }
@@ -109,13 +90,33 @@ Apply: ${job.url}
   }
 );
 
-// ---------------- EXPRESS ----------------
-app.get('/', (req, res) => {
-  res.send('Bot Running');
+// ---------------- OPTIONAL: MANUAL REFRESH ROUTE ----------------
+// Agar tum browser se /refresh-jobs hit karke manually trigger karna chaho
+app.get('/refresh-jobs', async (req, res) => {
+  try {
+    const jobs = await fetchJobs();
+    if (!jobs?.length) {
+      return res.status(200).send('No jobs fetched');
+    }
+
+    await notifyUsersForNewJobs(bot, jobs);
+    res.status(200).send('Jobs fetched & users notified');
+  } catch (err) {
+    console.error('Error in /refresh-jobs', err);
+    res.status(500).send('Error refreshing jobs');
+  }
 });
 
+// ---------------- HEALTH / ROOT ----------------
+app.get('/', (req, res) => {
+  res.send('Job Bot Running');
+});
+
+// ---------------- START SERVER ----------------
 const PORT = process.env.PORT || 10000;
 
 app.listen(PORT, () => {
-  console.log(`Server ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
+
+module.exports = { bot };

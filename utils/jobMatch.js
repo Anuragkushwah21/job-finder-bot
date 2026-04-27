@@ -1,7 +1,8 @@
 // utils/jobMatch.js
-
 function matchJobsForUser(user, jobs) {
-  const skills = user.skills || [];
+  if (!user || !Array.isArray(jobs)) return [];
+
+  const skills = (user.skills || []).map((s) => s.toLowerCase().trim());
 
   const uniqueJobs = Array.from(
     new Map(jobs.map((j) => [j.url, j])).values()
@@ -10,7 +11,6 @@ function matchJobsForUser(user, jobs) {
   let matched;
 
   if (!skills.length) {
-    // skills nahi hain → generic jobs
     matched = uniqueJobs;
   } else {
     matched = uniqueJobs.filter((job) => {

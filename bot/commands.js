@@ -1,4 +1,4 @@
-// bot/command.js
+// bot/commands.js
 const User = require('../models/User');
 const { fetchJobs } = require('../services/JobServices');
 const { matchJobsForUser } = require('../utils/jobMatch');
@@ -57,16 +57,65 @@ function setupCommands(bot) {
         'Welcome 🚀\n\nType fresher OR experienced\n\n' + helpText
       );
     } catch (err) {
-      console.log(err);
+      console.log('Error in /start', err);
     }
   });
 
   // ---------------- HELP ----------------
   bot.onText(/\/help/, async (msg) => {
-    await bot.sendMessage(msg.chat.id, helpText);
+    try {
+      await bot.sendMessage(msg.chat.id, helpText);
+    } catch (err) {
+      console.log('Error in /help', err);
+    }
   });
 
-  // ---------------- MESSAGE (experience + /more) ----------------
+  // ---------------- MORE ----------------
+  bot.onText(/\/more/, async (msg) => {
+    try {
+      const chatId = msg.chat.id;
+      const user = await User.findOne({ chatId });
+      if (!user) return;
+
+      if (!user.lastJobs?.length) {
+        return bot.sendMessage(chatId, 'No jobs yet');
+      }
+
+      const start = user.currentJobIndex || 0;
+      const end = start + 10;
+
+      const nextJobs = user.lastJobs.slice(start, end);
+
+      if (!nextJobs.length) {
+        return bot.sendMessage(chatId, 'No more jobs');
+      }
+
+      await User.updateOne(
+        { chatId },
+        {
+          $set: {
+            currentJobIndex: end,
+          },
+        }
+      );
+
+      let message = '🔥 More Jobs\n\n';
+
+      nextJobs.forEach((job) => {
+        message += `Title: ${job.title}
+Company: ${job.company}
+Apply: ${job.url}
+
+`;
+      });
+
+      return bot.sendMessage(chatId, message);
+    } catch (err) {
+      console.log('Error in /more', err);
+    }
+  });
+
+  // ---------------- MESSAGE (experience only) ----------------
   bot.on('message', async (msg) => {
     try {
       if (!msg.text) return;
@@ -74,7 +123,7 @@ function setupCommands(bot) {
       const chatId = msg.chat.id;
       const text = msg.text.toLowerCase();
 
-      if (text === '/start' || text === '/help') return;
+      if (text.startsWith('/')) return; // commands already handled
 
       const user = await User.findOne({ chatId });
       if (!user) return;
@@ -93,47 +142,15 @@ function setupCommands(bot) {
           );
 
           return bot.sendMessage(chatId, 'Upload resume PDF');
+        } else {
+          return bot.sendMessage(
+            chatId,
+            'Please type fresher OR experienced'
+          );
         }
-      }
-
-      // more jobs
-      if (text === '/more') {
-        if (!user.lastJobs?.length) {
-          return bot.sendMessage(chatId, 'No jobs yet');
-        }
-
-        const start = user.currentJobIndex || 0;
-        const end = start + 10;
-
-        const nextJobs = user.lastJobs.slice(start, end);
-
-        if (!nextJobs.length) {
-          return bot.sendMessage(chatId, 'No more jobs');
-        }
-
-        await User.updateOne(
-          { chatId },
-          {
-            $set: {
-              currentJobIndex: end,
-            },
-          }
-        );
-
-        let message = '🔥 More Jobs\n\n';
-
-        nextJobs.forEach((job) => {
-          message += `Title: ${job.title}
-Company: ${job.company}
-Apply: ${job.url}
-
-`;
-        });
-
-        return bot.sendMessage(chatId, message);
       }
     } catch (err) {
-      console.log(err);
+      console.log('Error in message handler', err);
     }
   });
 
@@ -195,41 +212,24 @@ Apply: ${job.url}
         return bot.sendMessage(chatId, 'No jobs found');
       }
 
-      // yahan bhi matchJobsForUser ka use kar sakte the,
-      // but tumhara original custom flow use kar raha hoon:
-
-      const uniqueJobs = Array.from(
-        new Map(jobs.map((j) => [j.url, j])).values()
+      // Reuse jobMatch helper instead of duplicate logic
+      const matched = matchJobsForUser(
+        { skills: foundSkills },
+        jobs
       );
 
-      let matched = uniqueJobs.filter((job) => {
-        const combined = (
-          (job.title || '') +
-          ' ' +
-          (job.description || '')
-        ).toLowerCase();
-
-        return (
-          foundSkills.some((s) => combined.includes(s)) ||
-          combined.includes('developer') ||
-          combined.includes('engineer')
-        );
-      });
-
-      if (!matched.length) {
-        matched = uniqueJobs;
-      }
+      const finalMatched = matched.length ? matched : jobs;
 
       await User.updateOne(
         { chatId },
         {
           $set: {
-            lastJobs: matched,
+            lastJobs: finalMatched,
             currentJobIndex: 10,
           },
           $addToSet: {
             seenJobs: {
-              $each: matched.map((j) => j.url),
+              $each: finalMatched.map((j) => j.url),
             },
           },
         }
@@ -237,7 +237,7 @@ Apply: ${job.url}
 
       let message = '🔥 Jobs For You\n\n';
 
-      matched.slice(0, 10).forEach((job) => {
+      finalMatched.slice(0, 10).forEach((job) => {
         message += `Title: ${job.title}
 Company: ${job.company}
 Apply: ${job.url}
@@ -249,8 +249,7 @@ Apply: ${job.url}
 
       await bot.sendMessage(chatId, message);
     } catch (err) {
-      console.log(err);
-
+      console.log('Error in resume handler', err);
       bot.sendMessage(msg.chat.id, 'Resume failed');
     }
   });
