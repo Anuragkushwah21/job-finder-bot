@@ -70,38 +70,79 @@ function setupCommands(bot) {
     }
   });
 
-  // ---------------- MORE ----------------
+  // ---------------- MORE (NEW LOGIC) ----------------
   bot.onText(/\/more/, async (msg) => {
     try {
       const chatId = msg.chat.id;
       const user = await User.findOne({ chatId });
       if (!user) return;
 
-      if (!user.lastJobs?.length) {
-        return bot.sendMessage(chatId, 'No jobs yet');
+      // 1) Pehle stored lastJobs se try karo
+      let start = user.currentJobIndex || 0;
+      let end = start + 10;
+
+      let nextJobs = (user.lastJobs || []).slice(start, end);
+
+      if (nextJobs.length) {
+        // Stored jobs abhi bhi bachi hui hain → wahi dikhao
+        await User.updateOne(
+          { chatId },
+          { $set: { currentJobIndex: end } }
+        );
+
+        let message = '🔥 More Jobs\n\n';
+        nextJobs.forEach((job) => {
+          message += `Title: ${job.title}
+Company: ${job.company}
+Apply: ${job.url}
+
+`;
+        });
+
+        return bot.sendMessage(chatId, message);
       }
 
-      const start = user.currentJobIndex || 0;
-      const end = start + 10;
-
-      const nextJobs = user.lastJobs.slice(start, end);
-
-      if (!nextJobs.length) {
+      // 2) Agar stored jobs khatam ho gayi, to AB fresh fetch karo
+      const jobs = await fetchJobs();
+      if (!jobs?.length) {
         return bot.sendMessage(chatId, 'No more jobs');
       }
 
+      // Nayi jobs ko user ke skills se match karo
+      const matched = matchJobsForUser(user, jobs);
+
+      // Agar match hi nahi mile, fallback: saari jobs
+      const finalMatched = matched.length ? matched : jobs;
+
+      // Agar finalMatched bhi purane seenJobs me hi hain (bilkul new nahi)
+      const seen = user.seenJobs || [];
+      const trulyNew = finalMatched.filter(
+        (j) => !seen.includes(j.url)
+      );
+
+      if (!trulyNew.length) {
+        // Nahi bachi koi new job
+        return bot.sendMessage(chatId, 'No more jobs');
+      }
+
+      // Nayi batch ko DB me store karo, pagination reset
       await User.updateOne(
         { chatId },
         {
           $set: {
-            currentJobIndex: end,
+            lastJobs: trulyNew,
+            currentJobIndex: 10,
+          },
+          $addToSet: {
+            seenJobs: {
+              $each: trulyNew.map((j) => j.url),
+            },
           },
         }
       );
 
-      let message = '🔥 More Jobs\n\n';
-
-      nextJobs.forEach((job) => {
+      let message = '🔥 More New Jobs\n\n';
+      trulyNew.slice(0, 10).forEach((job) => {
         message += `Title: ${job.title}
 Company: ${job.company}
 Apply: ${job.url}
@@ -109,9 +150,15 @@ Apply: ${job.url}
 `;
       });
 
+      message += '\nUse /more for more jobs';
+
       return bot.sendMessage(chatId, message);
     } catch (err) {
       console.log('Error in /more', err);
+      return bot.sendMessage(
+        msg.chat.id,
+        'Something went wrong with /more'
+      );
     }
   });
 
