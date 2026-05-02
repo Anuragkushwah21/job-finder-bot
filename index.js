@@ -6,7 +6,6 @@ const TelegramBot = require('node-telegram-bot-api');
 const cron = require('node-cron');
 
 const connectDB = require('./config/db');
-const User = require('./models/User');
 const { fetchJobs } = require('./services/JobServices');
 const { notifyUsersForNewJobs } = require('./services/newJobNotifier');
 const setupCommands = require('./bot/commands');
@@ -68,7 +67,7 @@ setupCommands(bot);
 
 // ---------------- DAILY ALERT (NEW JOBS ONLY) ----------------
 cron.schedule(
-  '0 9 * * *', // every day 9:00 AM
+  '0 9 * * *', // every day 9:00 AM IST
   async () => {
     try {
       console.log('Running daily jobs cron...');
@@ -79,7 +78,7 @@ cron.schedule(
         return;
       }
 
-      // Yeh helper har user ke liye sirf NEW + MATCHED jobs bhejta hai
+      // Har user ke liye sirf NEW + domain/skills matched jobs
       await notifyUsersForNewJobs(bot, jobs);
     } catch (err) {
       console.log('Cron error', err);
@@ -91,7 +90,6 @@ cron.schedule(
 );
 
 // ---------------- OPTIONAL: MANUAL REFRESH ROUTE ----------------
-// Agar tum browser se /refresh-jobs hit karke manually trigger karna chaho
 app.get('/refresh-jobs', async (req, res) => {
   try {
     const jobs = await fetchJobs();

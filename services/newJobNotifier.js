@@ -9,22 +9,23 @@ async function notifyUsersForNewJobs(bot, jobs) {
   if (!users.length) return;
 
   for (const user of users) {
+    // Domain + skills based matching
     const matched = matchJobsForUser(user, jobs);
     if (!matched.length) continue;
 
     const seen = user.seenJobs || [];
 
+    // Sirf woh jobs jo pehle nahi dikhayi gayi
     const newJobs = matched.filter((j) => !seen.includes(j.url));
     if (!newJobs.length) continue;
 
-    // yahan store karte hain taaki /more se yahi list lagi rahe
-    // append or overwrite: yahan hum overwrite kar rahe daily batch se
+    // Store new jobs for pagination + mark as seen
     await User.updateOne(
       { chatId: user.chatId },
       {
         $set: {
           lastJobs: newJobs,
-          currentJobIndex: 10, // subah ke message me pehle 10 bhejne ke baad index 10 pe
+          currentJobIndex: 10,
         },
         $addToSet: {
           seenJobs: {

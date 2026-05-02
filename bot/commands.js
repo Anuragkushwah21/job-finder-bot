@@ -1,6 +1,6 @@
 // bot/commands.js
 const User = require('../models/User');
-const { fetchJobs } = require('../services/JobServices');
+const { fetchJobsForUser } = require('../services/JobServices');
 const { matchJobsForUser } = require('../utils/jobMatch');
 const pdf = require('pdf-parse');
 const axios = require('axios');
@@ -17,6 +17,40 @@ Flow:
 2 Upload PDF Resume
 3 Get jobs
 `;
+
+// --------- Detect level & domain from resume text ---------
+const levelKeywords = {
+  fresher: ['fresher', 'recent graduate', 'entry level', '0-1 year', '0-6 months', '0-1 years'],
+  junior: ['junior', 'associate'],
+  senior: ['senior', 'lead', 'principal'],
+  manager: ['manager', 'head of', 'director'],
+};
+
+const domainKeywords = {
+  it: ['developer', 'engineer', 'programmer', 'software', 'frontend', 'backend', 'full stack', 'web development'],
+  marketing: ['marketing', 'seo', 'content writer', 'social media', 'digital marketing'],
+  sales: ['sales', 'business development', 'bdm', 'account executive'],
+  finance: ['accountant', 'accounts', 'finance', 'ca', 'cfa'],
+  hr: ['hr', 'human resources', 'recruiter', 'talent acquisition'],
+  design: ['designer', 'ui ux', 'graphic designer', 'product designer'],
+  operations: ['operations', 'ops', 'supply chain', 'logistics'],
+};
+
+function detectLevel(text) {
+  const t = text.toLowerCase();
+  for (const [level, words] of Object.entries(levelKeywords)) {
+    if (words.some((w) => t.includes(w))) return level;
+  }
+  return null;
+}
+
+function detectDomain(text) {
+  const t = text.toLowerCase();
+  for (const [domain, words] of Object.entries(domainKeywords)) {
+    if (words.some((w) => t.includes(w))) return domain;
+  }
+  return null;
+}
 
 function setupCommands(bot) {
   // ---------------- COMMANDS LIST ----------------
@@ -84,7 +118,6 @@ function setupCommands(bot) {
       let nextJobs = (user.lastJobs || []).slice(start, end);
 
       if (nextJobs.length) {
-        // Stored jobs abhi bhi bachi hui hain → wahi dikhao
         await User.updateOne(
           { chatId },
           { $set: { currentJobIndex: end } }
@@ -102,30 +135,24 @@ Apply: ${job.url}
         return bot.sendMessage(chatId, message);
       }
 
-      // 2) Agar stored jobs khatam ho gayi, to AB fresh fetch karo
-      const jobs = await fetchJobs();
+      // 2) Agar stored jobs khatam ho gayi, to AB fresh fetch karo (user-specific)
+      const jobs = await fetchJobsForUser(user);
       if (!jobs?.length) {
         return bot.sendMessage(chatId, 'No more jobs');
       }
 
-      // Nayi jobs ko user ke skills se match karo
       const matched = matchJobsForUser(user, jobs);
-
-      // Agar match hi nahi mile, fallback: saari jobs
       const finalMatched = matched.length ? matched : jobs;
 
-      // Agar finalMatched bhi purane seenJobs me hi hain (bilkul new nahi)
       const seen = user.seenJobs || [];
       const trulyNew = finalMatched.filter(
         (j) => !seen.includes(j.url)
       );
 
       if (!trulyNew.length) {
-        // Nahi bachi koi new job
         return bot.sendMessage(chatId, 'No more jobs');
       }
 
-      // Nayi batch ko DB me store karo, pagination reset
       await User.updateOne(
         { chatId },
         {
@@ -243,40 +270,59 @@ Apply: ${job.url}
         resumeText.includes(s)
       );
 
+      // Level + domain detect karo
+      const detectedLevel = detectLevel(resumeText);   // fresher/junior/senior/manager/null
+      const detectedDomain = detectDomain(resumeText); // it/marketing/sales/.../null
+
       await User.updateOne(
         { chatId },
         {
           $set: {
             skills: foundSkills,
             step: 'ready',
+            level: detectedLevel || user.experience || null,
+            domain: detectedDomain || user.domain || null,
           },
         }
       );
 
-      const jobs = await fetchJobs();
+      // Latest user (updated) le lo
+      const updatedUser = await User.findOne({ chatId });
 
+      // User-specific jobs fetch
+      const jobs = await fetchJobsForUser(updatedUser);
       if (!jobs?.length) {
         return bot.sendMessage(chatId, 'No jobs found');
       }
 
-      // Reuse jobMatch helper instead of duplicate logic
-      const matched = matchJobsForUser(
-        { skills: foundSkills },
-        jobs
-      );
-
+      // 1) Skill + domain based matching
+      const matched = matchJobsForUser(updatedUser, jobs);
       const finalMatched = matched.length ? matched : jobs;
 
+      // 2) Purane seenJobs ke against filter
+      const seen = updatedUser.seenJobs || [];
+      const trulyNew = finalMatched.filter(
+        (j) => !seen.includes(j.url)
+      );
+
+      if (!trulyNew.length) {
+        return bot.sendMessage(
+          chatId,
+          'No new jobs based on your resume'
+        );
+      }
+
+      // 3) DB update: lastJobs = ye new list, currentJobIndex = 10
       await User.updateOne(
         { chatId },
         {
           $set: {
-            lastJobs: finalMatched,
+            lastJobs: trulyNew,
             currentJobIndex: 10,
           },
           $addToSet: {
             seenJobs: {
-              $each: finalMatched.map((j) => j.url),
+              $each: trulyNew.map((j) => j.url),
             },
           },
         }
@@ -284,7 +330,7 @@ Apply: ${job.url}
 
       let message = '🔥 Jobs For You\n\n';
 
-      finalMatched.slice(0, 10).forEach((job) => {
+      trulyNew.slice(0, 10).forEach((job) => {
         message += `Title: ${job.title}
 Company: ${job.company}
 Apply: ${job.url}
